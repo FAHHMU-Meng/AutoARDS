@@ -43,7 +43,7 @@ By consolidating multiple diagnostic procedures into a **single CT-driven workfl
 ## ⚙️ Reproduction
 
 - All training scripts are provided in the **`train/`** folder for reproducing experiments and baseline comparisons.  
-- The **official checkpoint** used in AutoARDS is under **patent protection** and cannot be released. However, all **implementation details** are described in the **Methods** section of the manuscript to support replication with non-proprietary libraries.
+- The **official checkpoint** used in AutoARDS is under **commercial protection** and cannot be released. However, all **implementation details** are described in the **Methods** section of the manuscript to support replication with non-proprietary libraries.
 
 ---
 
