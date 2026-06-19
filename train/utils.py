@@ -5,6 +5,7 @@ import ast
 from torch.utils.data.dataset import Dataset
 import torch
 from monai.transforms import *
+from transformers import BertTokenizer
 
 TARGET_SIZE = (224, 320, 224)
 
@@ -316,3 +317,101 @@ class TrainSetLoader_survival(Dataset):
 
     def __len__(self):
         return len(self.train_list)
+
+
+_tokenizer = None
+
+
+def _get_tokenizer():
+    global _tokenizer
+    if _tokenizer is None:
+        _tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    return _tokenizer
+
+
+class TrainSetLoader_pretrain(Dataset):
+    """
+    Pretraining dataset for AutoARDS pipeline.
+
+    Expected Excel sheet "Pretrain" columns:
+        0: npz_path
+        1: report (structured text produced by DeepSeek-70B)
+        2: age
+        3: sex  (0/1)
+        4: fold
+
+    The npz file must contain:
+        data        - CT array (HU)
+        soft_label  - Chan-Vese soft segmentation probability map [0,1]
+
+    If the npz also has a perturbed report variant, pass its text field name
+    via `perturb_col`; otherwise only the clean report is used.
+    """
+
+    def __init__(self,
+                 info_path,
+                 sheet_name="Pretrain",
+                 train=True,
+                 folder=0,
+                 max_text_len=512):
+        super().__init__()
+        self.info = np.array(pd.read_excel(info_path, sheet_name=sheet_name), dtype=object)
+        self.train = train
+        self.max_text_len = max_text_len
+
+        if self.train:
+            self.data_list = self.info[self.info[:, 4] != folder]
+        else:
+            self.data_list = self.info[self.info[:, 4] == folder]
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, index):
+        row = self.data_list[index]
+        npz_path = str(row[0])
+        report   = str(row[1])
+        age      = float(row[2]) / 100.0   # normalise to ~0-1 range
+        sex      = int(row[3])             # 0 or 1
+
+        # Load CT and soft-label mask
+        arr = np.load(npz_path, allow_pickle=True)
+        try:
+            data = arr["data"][np.newaxis]
+        except KeyError:
+            data = arr["arr_0"][np.newaxis]
+
+        data = np.clip((data + 1000.0) / 1600.0, 0, 1).astype("float32")
+
+        soft_label = arr["soft_label"].astype("float32")   # shape (H,W,D)
+
+        if self.train:
+            # Apply the same spatial augmentation to both image and mask
+            combined = np.concatenate([data, soft_label[np.newaxis]], axis=0)  # (2,H,W,D)
+            combined = basic_transforms(combined)
+            data = combined[:1]
+            soft_label = combined[1]
+        else:
+            data = Resize((224, 320, 224))(data)
+            soft_label = Resize((224, 320, 224))(soft_label[np.newaxis])[0]
+
+        # Tokenize the structured report
+        tok = _get_tokenizer()
+        enc = tok(
+            report,
+            max_length=self.max_text_len,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids      = enc["input_ids"].squeeze(0)       # (max_text_len,)
+        attention_mask = enc["attention_mask"].squeeze(0)  # (max_text_len,)
+
+        return (
+            torch.tensor(data, dtype=torch.float),
+            input_ids,
+            attention_mask,
+            torch.tensor(soft_label, dtype=torch.float),
+            torch.tensor(age, dtype=torch.float),
+            torch.tensor(sex, dtype=torch.long),
+        )
